@@ -7,5 +7,5 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping service
-        run: curl -fsS https://telegram-gemini-bot-c443.onrender.com/ || true
+      - name: Tick service (keepalive + proactive)
+        run: curl -fsS https://telegram-gemini-bot-c443.onrender.com/tick || true
