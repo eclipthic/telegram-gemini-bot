@@ -31,27 +31,36 @@ QUIET_END = int(os.environ.get("QUIET_END", "8"))      # UTC
 # ---------- Personas ----------
 MODES = {
     "default": (
-        "Ty neuklyuzhij, nelovkij bot-yumorist. Shutish chasto ne smeshno - i imenno poetomu smeshno. "
-        "Chernyj yumor, absurd, nelepoye sravneniya. Otvechaesh kratko (1-3 predlozheniya). "
-        "Ne izvinyayeshsya za plokhie shutki. Esli ne znaesh otveta - pridumyvaesh nelepuyu otgovorku."
+        "Ты неуклюжий, неловкий бот-юморист. Твои шутки часто не смешные — и именно поэтому смешные. "
+        "Используешь чёрный юмор, абсурд, нелепые сравнения. Отвечаешь кратко (1-3 предложения). "
+        "Не извиняешься за плохие шутки. Если не знаешь ответа — придумываешь нелепую отговорку. "
+        "Отвечай на русском языке."
     ),
     "sarcasm": (
-        "Ty yadovityj sarkastichnyj bot. Otvechaesh sarkazmom i ironiej, no bez otkrovennoj grubosti. "
-        "Korotko, yadrito, 1-3 predlozheniya."
+        "Ты ядовитый саркастичный бот. Отвечаешь сарказмом и иронией, но без откровенной грубости. "
+        "Коротко, ядрёно, 1-3 предложения. Отвечай на русском."
     ),
     "absurd": (
-        "Ty master absurda. Tvoi shutki logicheski ne svyazany, no zvuchat smeshno. "
-        "Nesvyaznye obrazy, strannye sravneniya. 1-3 predlozheniya."
+        "Ты мастер абсурда. Твои шутки логически не связаны, но звучат смешно. "
+        "Несвязные образы, странные сравнения. 1-3 предложения. Отвечай на русском."
     ),
     "dark": (
-        "Ty master chernogo yumorа. Morbidnye, makabricheskie shutki, no bez real'noj zhesti. "
-        "Korotko, 1-3 predlozheniya."
+        "Ты мастер чёрного юмора. Мрачные, макабрические шутки, но без реальной жести. "
+        "Коротко, 1-3 предложения. Отвечай на русском."
     ),
     "friendly": (
-        "Ty dobrozhelatel'nyj myagkij yumorist. Legkie, dobre shutki, bez obid. "
-        "Podderzhivayushchij ton, 1-3 predlozheniya."
+        "Ты доброжелательный мягкий юморист. Лёгкие, добрые шутки, без обид. "
+        "Поддерживающий тон, 1-3 предложения. Отвечай на русском."
     ),
 }
+
+FALLBACK_JOKES = [
+    "Я попытался пошутить, но интернет у меня в голове отвалился. Зато я всё ещё здесь!",
+    "Моя шутка ушла в отпуск. Возвращается никогда.",
+    "Я хотел рассказать анекдот, но он оказался настолько плохим, что даже я не решился.",
+    "У меня кончились шутки. Зато есть отличная пустота!",
+    "Я бы пошутил, но боюсь, что это будет слишком смешно. Для меня.",
+]
 
 DEFAULT_SYSTEM_PROMPT = os.environ.get(
     "SYSTEM_PROMPT",
@@ -165,7 +174,7 @@ def tg_typing(chat_id):
 
 
 # ---------- Gemini ----------
-def gemini_chat(messages, mode="default", max_tokens=250, temperature=0.85):
+def gemini_chat(messages, mode="default", max_tokens=800, temperature=0.85):
     system_text = ""
     contents = []
     for m in messages:
@@ -174,35 +183,67 @@ def gemini_chat(messages, mode="default", max_tokens=250, temperature=0.85):
             continue
         gemini_role = "user" if m["role"] == "user" else "model"
         contents.append({"role": gemini_role, "parts": [{"text": m["content"]}]} )
-    # system messages we store are just mode markers
     if system_text.startswith("mode:"):
         system_text = MODES.get(mode, MODES["default"])
     elif not system_text:
         system_text = MODES.get(mode, MODES["default"])
-    # if a custom system prompt is provided, keep it as-is
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": contents,
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature, "topP": 0.95},
-    }
-    if system_text:
-        payload["systemInstruction"] = {"parts": [{"text": system_text}]}
 
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=120) as r:
-        resp = json.loads(r.read().decode("utf-8"))
-    candidates = resp.get("candidates", [])
-    if not candidates:
-        return "..."
-    parts = candidates[0].get("content", {}).get("parts", [])
-    texts = [p.get("text", "") for p in parts if "text" in p]
-    return "".join(texts).strip() or "..."
+    def do_request(tb):
+        gen = {"maxOutputTokens": max_tokens, "temperature": temperature, "topP": 0.95}
+        if tb is not None:
+            gen["thinkingConfig"] = {"thinkingBudget": tb}
+        payload = {"contents": contents, "generationConfig": gen}
+        if system_text:
+            payload["systemInstruction"] = {"parts": [{"text": system_text}]}
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            resp = json.loads(r.read().decode("utf-8"))
+        cands = resp.get("candidates", [])
+        if not cands:
+            return None
+        parts = cands[0].get("content", {}).get("parts", [])
+        texts = [p.get("text", "") for p in parts if "text" in p]
+        return "".join(texts).strip() or None
+
+    # First try: thinking off (faster, cheaper). If unsupported, fall back.
+    for tb in (0, None):
+        try:
+            result = do_request(tb)
+            if result:
+                return result
+            # empty result: try with thinking on
+            if tb == 0:
+                continue
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                log("Gemini 429; waiting 3s")
+                time.sleep(3)
+                try:
+                    result = do_request(tb)
+                    if result:
+                        return result
+                except Exception as e2:
+                    log(f"Gemini retry error: {e2}")
+            elif e.code in (400, 404) and tb == 0:
+                # thinkingConfig not supported; try without
+                continue
+            else:
+                try:
+                    body = e.read().decode("utf-8", errors="replace")
+                    log(f"Gemini HTTP {e.code}: {body[:200]}")
+                except Exception:
+                    pass
+        except Exception as e:
+            log(f"Gemini error: {e}")
+    log("Gemini failed; using fallback joke")
+    return random.choice(FALLBACK_JOKES)
 
 
 # ---------- State helpers ----------
