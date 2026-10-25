@@ -79,12 +79,7 @@ def handle_update(update):
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
     text = msg.get("text", "")
-    if user_id != ADMIN_ID:
-        try:
-            tg_request("sendMessage", {"chat_id": chat_id, "text": "Доступ запрещён."})
-        except Exception:
-            pass
-        return
+    # public bot: allow all users
     if not text:
         return
     if text.startswith("/start"):
