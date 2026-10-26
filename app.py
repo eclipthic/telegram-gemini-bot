@@ -177,6 +177,7 @@ def get_settings(chat_id):
             "proactive_count_date": "",
             "proactive_count": 0,
             "system_prompt_override": SYSTEM_PROMPT,
+            "last_bot_response": 0,
         }
     return chat_settings[cid]
 
@@ -660,18 +661,27 @@ def handle_update(update):
     touch_activity(chat_id, user_id)
     get_settings(chat_id)
 
-    # groups: respond only if mentioned or replied
+    # groups handling
     if chat_type != "private":
         uname = bot_username()
-        mentioned = bool(uname and f"@{uname}" in (text or ""))
+        mentioned = bool(uname and f"@{uname.lower()}" in (text or "").lower())
         replied = msg.get("reply_to_message", {}).get("from", {}).get("is_bot", False)
-        if not (mentioned or replied):
-            if not (text or "").startswith("/"):
-                save_state()
-                return
-            # commands in groups also require mention/reply
+        is_command = bool((text or "").strip().startswith("/"))
+        respond_all = os.environ.get("GROUP_RESPOND_ALL", "1") == "1"
+        if not (mentioned or replied or is_command or respond_all):
             save_state()
             return
+        # throttle non-mentioned chatter to avoid spam
+        if not (mentioned or replied or is_command):
+            s = get_settings(chat_id)
+            last_resp = s.get("last_bot_response", 0)
+            if time.time() - last_resp < 4:
+                save_state()
+                return
+            s["last_bot_response"] = time.time()
+        # strip mention from text for LLM
+        if uname:
+            text = text.replace(f"@{uname}", "").strip() or text
 
     if not text:
         save_state()
