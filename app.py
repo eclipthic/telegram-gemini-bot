@@ -122,6 +122,7 @@ stats = {}
 state_lock = threading.Lock()
 
 _bot_username = None
+_bot_first_name = None
 
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
@@ -232,15 +233,23 @@ def is_quiet_now():
     return QUIET_START <= h < QUIET_END
 
 def bot_username():
-    global _bot_username
+    global _bot_username, _bot_first_name
     if _bot_username:
         return _bot_username
     try:
         me = tg_request("getMe")
-        _bot_username = me.get("result", {}).get("username", "")
+        res = me.get("result", {})
+        _bot_username = res.get("username", "") or ""
+        _bot_first_name = (res.get("first_name") or "").strip()
     except Exception as e:
         log(f"getMe error: {e}")
     return _bot_username or ""
+
+def bot_first_name():
+    global _bot_first_name
+    if _bot_first_name is None:
+        bot_username()
+    return _bot_first_name or ""
 
 # ---------- LLM ----------
 _current_member_context = ""
@@ -758,7 +767,25 @@ def handle_update(update):
     # groups handling
     if chat_type != "private":
         uname = bot_username()
-        mentioned = bool(uname and (f"@{uname.lower()}" in (text or "").lower() or uname.lower() in (text or "").lower()))
+        fname = bot_first_name()
+        low = (text or "").lower()
+        mentioned = False
+        if uname and (f"@{uname.lower()}" in low or uname.lower() in low):
+            mentioned = True
+        if not mentioned and fname and fname.lower() in low:
+            mentioned = True
+        # also check username parts (e.g. "clifford" from "clifford_bot")
+        if not mentioned and uname:
+            for part in uname.lower().replace("_", " ").split():
+                if len(part) >= 4 and part in low:
+                    mentioned = True
+                    break
+        # fallback trigger words if username unknown
+        if not mentioned:
+            for kw in ("бот", "bot", "клиффорд", "clifford", "клиф"):
+                if kw in low:
+                    mentioned = True
+                    break
         replied = msg.get("reply_to_message", {}).get("from", {}).get("is_bot", False)
         is_command = bool((text or "").strip().startswith("/"))
         respond_all = os.environ.get("GROUP_RESPOND_ALL", "1") == "1"
@@ -769,8 +796,12 @@ def handle_update(update):
         if not (mentioned or replied or is_command):
             s = get_settings(chat_id)
             last_resp = s.get("last_bot_response", 0)
-            prob = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.4"))
-            if time.time() - last_resp < 8:
+            prob = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.3"))
+            if time.time() - last_resp < 10:
+                save_state()
+                return
+            # skip very short / trivial messages
+            if len((text or "").strip()) < 4:
                 save_state()
                 return
             if random.random() > prob:
