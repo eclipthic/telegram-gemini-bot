@@ -152,18 +152,39 @@ def gemini_chat(messages, mode="default", max_tokens=1000, temperature=0.85):
                 return r
         except Exception as e:
             log(f"Gemini failed: {e}")
-    # 2. Pollinations (free, no key)
+    # 2. Pollinations (free, no key) - try several models
+    pollinations_models = ["openai", "mistral", "llama", "gemini", "qwen"]
+    if os.environ.get("POLLINATIONS_MODEL"):
+        pollinations_models = [os.environ.get("POLLINATIONS_MODEL")] + pollinations_models
+    for pm in pollinations_models:
+        try:
+            r = _openai_compat_chat(
+                "https://text.pollinations.ai/openai",
+                "",
+                pm,
+                messages, system_text, temperature, max_tokens,
+            )
+            if r:
+                return r
+        except Exception as e:
+            log(f"Pollinations ({pm}) failed: {e}")
+    # fallback: direct text endpoint
     try:
-        r = _openai_compat_chat(
-            "https://text.pollinations.ai/openai",
-            "",
-            os.environ.get("POLLINATIONS_MODEL", "openai"),
-            messages, system_text, temperature, max_tokens,
-        )
-        if r:
-            return r
+        import urllib.parse as _up
+        last_user = ""
+        for m in reversed(messages):
+            if m["role"] == "user":
+                last_user = m["content"]
+                break
+        prompt = (system_text + "\n" + last_user).strip()
+        url = "https://text.pollinations.ai/" + _up.quote(prompt[:500])
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=60) as r:
+            txt = r.read().decode("utf-8", errors="replace").strip()
+        if txt:
+            return txt
     except Exception as e:
-        log(f"Pollinations failed: {e}")
+        log(f"Pollinations direct failed: {e}")
     # 3. Groq
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
