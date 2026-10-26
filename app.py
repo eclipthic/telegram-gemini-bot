@@ -42,7 +42,7 @@ DEFAULT_MODE = "default"
 MODES = {
     "default": (
         "Ты неуклюжий, неловкий бот-юморист. Твои шутки часто не смешные — и именно поэтому смешные. "
-        "Чёрный юмор, абсурд, нелепые сравнения. Отвечай кратко (1-3 предложения). "
+        "Чёрный юмор, абсурд, нелепые сравнения. Отвечай очень кратко (1-2 предложения). "
         "Не извиняйся за плохие шутки. Если не знаешь ответа — придумывай нелепую отговорку. "
         "Отвечай на русском."
     ),
@@ -221,10 +221,13 @@ def member_context(chat_id):
     if not members:
         return ""
     lines = []
-    for uid, info in list(members.items())[-15:]:
+    recent = sorted(members.items(), key=lambda x: x[1].get("last", 0), reverse=True)[:8]
+    for uid, info in recent:
         uname = ("@" + info["username"]) if info.get("username") else info["name"]
         lines.append(f"- {info['name']} ({uname})")
-    return "Участники чата:\n" + "\n".join(lines)
+    if not lines:
+        return ""
+    return ("Участники чата (используй только их, не выдумывай других):\n" + "\n".join(lines))
 
 def is_quiet_now():
     h = time.gmtime().tm_hour
@@ -853,7 +856,15 @@ def handle_update(update):
     except Exception:
         pass
 
-    history[cid].append({"role": "user", "content": text})
+    # attribute message to its author so the bot doesn't confuse users
+    author = ""
+    u = msg.get("from") or {}
+    if u:
+        author = (u.get("first_name") or "").strip()
+        if u.get("username"):
+            author = (author + " (@" + u.get("username") + ")").strip()
+    content_for_history = (f"[{author}]: {text}" if author else text)
+    history[cid].append({"role": "user", "content": content_for_history})
     if len(history[cid]) > 16:
         sysmsg = history[cid][0]
         history[cid] = [sysmsg] + history[cid][-15:]
@@ -862,7 +873,7 @@ def handle_update(update):
     global _current_member_context
     _current_member_context = member_context(chat_id)
     try:
-        reply = chat(history[cid], mode=mode)
+        reply = chat(history[cid], mode=mode, max_tokens=150)
     except Exception as e:
         log(f"LLM error: {e}")
         reply = "Что-то пошло не так. Попробуй ещё раз."
