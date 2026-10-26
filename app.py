@@ -65,10 +65,8 @@ def tg_send(chat_id, text):
             log(f"send error: {e}")
 
 def tg_typing(chat_id):
-    try:
-        tg_request("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-    except Exception:
-        pass
+    # disabled to avoid artificial delay
+    pass
 
 # ---------- Personas ----------
 MODES = {
@@ -208,7 +206,6 @@ def gemini_chat(messages, mode="default", max_tokens=300, temperature=0.85):
                 return r
         except Exception as e:
             log(f'Pollinations attempt {attempt+1} failed: {e}')
-            time.sleep(0.5)
     # direct GET fallback (fast)
     try:
         import urllib.parse as _up
