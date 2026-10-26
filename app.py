@@ -9,13 +9,6 @@ import urllib.error
 
 from flask import Flask, request, jsonify
 
-# Optional: OllamaFreeAPI (free distributed Ollama servers, no key)
-try:
-    from ollamafreeapi import OllamaFreeAPI
-    _ollama_free_available = True
-except Exception:
-    _ollama_free_available = False
-
 app = Flask(__name__)
 
 # ---------- Config ----------
@@ -23,6 +16,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MODEL = os.environ.get("MODEL", "gemini-3-flash-preview")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
+SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "")
+DEFAULT_SYSTEM_PROMPT = SYSTEM_PROMPT or "mode:default"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HISTORY_PATH = os.path.join(BASE_DIR, "history.json")
@@ -182,20 +177,34 @@ def _openai_compat_chat(base_url, api_key, model, messages, system_text, tempera
     return (choices[0].get("message", {}).get("content") or "").strip() or None
 
 
+# Free no-key OpenAI-compatible providers (tried in order)
+FREE_PROVIDERS = [
+    ("https://api.llm7.io/v1", "", "codestral-latest"),
+    ("https://api.kilo.ai/api/gateway", "", "kilo-auto/small"),
+    ("https://api.free.ai/v1", "", "mistral"),
+    ("https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", "", "Meta-Llama-3_3-70B-Instruct"),
+]
+
+
 def gemini_chat(messages, mode='default', max_tokens=300, temperature=0.85):
     system_text = _build_system_text(messages, mode)
-    pm = os.environ.get('POLLINATIONS_MODEL', 'openai')
-    try:
-        r = _openai_compat_chat(
-            'https://text.pollinations.ai/openai',
-            '',
-            pm,
-            messages, system_text, temperature, max_tokens,
-        )
-        if r:
-            return r
-    except Exception as e:
-        log(f'Pollinations failed: {e}')
+    # Optional: Gemini (free tier) if key provided
+    if GEMINI_API_KEY:
+        try:
+            r = _gemini_request(messages, mode, max_tokens, temperature)
+            if r:
+                return r
+        except Exception as e:
+            log(f"Gemini failed: {e}")
+    # Try free OpenAI-compatible providers
+    for base_url, api_key, model in FREE_PROVIDERS:
+        try:
+            r = _openai_compat_chat(base_url, api_key, model, messages, system_text, temperature, max_tokens)
+            if r:
+                return r
+        except Exception as e:
+            log(f"LLM provider {base_url} ({model}) failed: {e}")
+    # Pollinations direct (keyless GET) as last resort
     try:
         import urllib.parse as _up
         last_user = ''
@@ -206,12 +215,12 @@ def gemini_chat(messages, mode='default', max_tokens=300, temperature=0.85):
         prompt = (system_text + '\n' + last_user).strip()
         url = 'https://text.pollinations.ai/' + _up.quote(prompt[:300])
         req = urllib.request.Request(url, method='GET')
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             txt = r.read().decode('utf-8', errors='replace').strip()
         if txt:
             return txt
     except Exception as e:
-        log(f'Pollinations direct failed: {e}')
+        log(f"Pollinations direct failed: {e}")
     return 'ИИ сейчас недоступен. Попробуй позже.'
 
 
