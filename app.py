@@ -182,31 +182,20 @@ def _openai_compat_chat(base_url, api_key, model, messages, system_text, tempera
     return (choices[0].get("message", {}).get("content") or "").strip() or None
 
 
-def gemini_chat(messages, mode="default", max_tokens=300, temperature=0.85):
+def gemini_chat(messages, mode='default', max_tokens=300, temperature=0.85):
     system_text = _build_system_text(messages, mode)
-    # 1. Gemini
-    if GEMINI_API_KEY:
-        try:
-            r = _gemini_request(messages, mode, max_tokens, temperature)
-            if r:
-                return r
-        except Exception as e:
-            log(f"Gemini failed: {e}")
-    # 2. Pollinations (free, no key) - fast path
     pm = os.environ.get('POLLINATIONS_MODEL', 'openai')
-    for attempt in range(2):
-        try:
-            r = _openai_compat_chat(
-                'https://text.pollinations.ai/openai',
-                '',
-                pm,
-                messages, system_text, temperature, min(max_tokens, 300),
-            )
-            if r:
-                return r
-        except Exception as e:
-            log(f'Pollinations attempt {attempt+1} failed: {e}')
-    # direct GET fallback (fast)
+    try:
+        r = _openai_compat_chat(
+            'https://text.pollinations.ai/openai',
+            '',
+            pm,
+            messages, system_text, temperature, max_tokens,
+        )
+        if r:
+            return r
+    except Exception as e:
+        log(f'Pollinations failed: {e}')
     try:
         import urllib.parse as _up
         last_user = ''
@@ -217,71 +206,14 @@ def gemini_chat(messages, mode="default", max_tokens=300, temperature=0.85):
         prompt = (system_text + '\n' + last_user).strip()
         url = 'https://text.pollinations.ai/' + _up.quote(prompt[:300])
         req = urllib.request.Request(url, method='GET')
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=8) as r:
             txt = r.read().decode('utf-8', errors='replace').strip()
         if txt:
             return txt
     except Exception as e:
         log(f'Pollinations direct failed: {e}')
+    return 'ИИ сейчас недоступен. Попробуй позже.'
 
-    # 3. Groq
-    groq_key = os.environ.get("GROQ_API_KEY", "")
-    if groq_key:
-        try:
-            r = _openai_compat_chat(
-                "https://api.groq.com/openai/v1",
-                groq_key,
-                os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
-                messages, system_text, temperature, max_tokens,
-            )
-            if r:
-                return r
-        except Exception as e:
-            log(f"Groq failed: {e}")
-    # 4. OpenRouter (free models)
-    or_key = os.environ.get("OPENROUTER_API_KEY", "")
-    if or_key:
-        try:
-            r = _openai_compat_chat(
-                "https://openrouter.ai/api/v1",
-                or_key,
-                os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
-                messages, system_text, temperature, max_tokens,
-                extra_headers={"HTTP-Referer": "https://github.com/eclipthic/telegram-gemini-bot", "X-Title": "Telegram Humor Bot"},
-            )
-            if r:
-                return r
-        except Exception as e:
-            log(f"OpenRouter failed: {e}")
-    # 5. Hugging Face
-    hf_key = os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGINGFACE_API_KEY", "")
-    if hf_key:
-        try:
-            r = _openai_compat_chat(
-                "https://api-inference.huggingface.co/v1",
-                hf_key,
-                os.environ.get("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
-                messages, system_text, temperature, max_tokens,
-            )
-            if r:
-                return r
-        except Exception as e:
-            log(f"HuggingFace failed: {e}")
-    # 6. Ollama (local)
-    ollama_url = os.environ.get("OLLAMA_URL", "")
-    if ollama_url:
-        try:
-            r = _openai_compat_chat(
-                ollama_url.rstrip("/") + "/v1",
-                "",
-                os.environ.get("OLLAMA_MODEL", "llama3.1"),
-                messages, system_text, temperature, max_tokens,
-            )
-            if r:
-                return r
-        except Exception as e:
-            log(f"Ollama failed: {e}")
-    return "ИИ сейчас недоступен. Попробуй позже."
 
 
 # ---------- State helpers ----------
