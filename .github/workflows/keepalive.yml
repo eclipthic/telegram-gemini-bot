@@ -8,4 +8,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Tick service (keepalive + proactive)
-        run: curl -fsS https://telegram-gemini-bot-c443.onrender.com/tick || true
+        run: curl -fsS "${{ secrets.RENDER_URL || 'https://telegram-gemini-bot-c443.onrender.com' }}/tick" || true
