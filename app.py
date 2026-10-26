@@ -187,39 +187,66 @@ def gemini_chat(messages, mode="default", max_tokens=1000, temperature=0.85):
                 return r
         except Exception as e:
             log(f"Gemini failed: {e}")
-    # 2. Pollinations (free, no key) - try several models
-    pollinations_models = ["openai", "mistral", "llama", "gemini", "qwen"]
+    # 2. Pollinations (free, no key) - try several models and endpoints
+    pollinations_models = ["openai", "mistral", "llama", "gemini", "qwen", "deepseek"]
     if os.environ.get("POLLINATIONS_MODEL"):
         pollinations_models = [os.environ.get("POLLINATIONS_MODEL")] + pollinations_models
+
     for pm in pollinations_models:
+        for attempt in range(3):
+            try:
+                r = _openai_compat_chat(
+                    "https://text.pollinations.ai/openai",
+                    "",
+                    pm,
+                    messages, system_text, temperature, max_tokens,
+                )
+                if r:
+                    return r
+            except Exception as e:
+                log(f"Pollinations ({pm}) attempt {attempt+1} failed: {e}")
+                time.sleep(1)
+    # direct text endpoint (GET)
+    for attempt in range(3):
         try:
-            r = _openai_compat_chat(
-                "https://text.pollinations.ai/openai",
-                "",
-                pm,
-                messages, system_text, temperature, max_tokens,
-            )
-            if r:
-                return r
+            import urllib.parse as _up
+            last_user = ""
+            for m in reversed(messages):
+                if m["role"] == "user":
+                    last_user = m["content"]
+                    break
+            prompt = (system_text + "\n" + last_user).strip()
+            url = "https://text.pollinations.ai/" + _up.quote(prompt[:400]) + "?model=openai"
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                txt = r.read().decode("utf-8", errors="replace").strip()
+            if txt:
+                return txt
         except Exception as e:
-            log(f"Pollinations ({pm}) failed: {e}")
-    # fallback: direct text endpoint
-    try:
-        import urllib.parse as _up
-        last_user = ""
-        for m in reversed(messages):
-            if m["role"] == "user":
-                last_user = m["content"]
-                break
-        prompt = (system_text + "\n" + last_user).strip()
-        url = "https://text.pollinations.ai/" + _up.quote(prompt[:500])
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=60) as r:
-            txt = r.read().decode("utf-8", errors="replace").strip()
-        if txt:
-            return txt
-    except Exception as e:
-        log(f"Pollinations direct failed: {e}")
+            log(f"Pollinations direct attempt {attempt+1} failed: {e}")
+            time.sleep(1)
+    # alternative: POST to text endpoint
+    for attempt in range(2):
+        try:
+            last_user = ""
+            for m in reversed(messages):
+                if m["role"] == "user":
+                    last_user = m["content"]
+                    break
+            payload = {"messages": [{"role": "system", "content": system_text}, {"role": "user", "content": last_user}], "model": "openai"}
+            req = urllib.request.Request(
+                "https://text.pollinations.ai/",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as r:
+                txt = r.read().decode("utf-8", errors="replace").strip()
+            if txt:
+                return txt
+        except Exception as e:
+            log(f"Pollinations POST attempt {attempt+1} failed: {e}")
+            time.sleep(1)
     # 3. Groq
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
