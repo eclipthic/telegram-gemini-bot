@@ -62,6 +62,11 @@ MODES = {
         "Ты доброжелательный мягкий юморист. Лёгкие добрые шутки без обид. "
         "Поддерживающий тон, 1-3 предложения. Отвечай на русском."
     ),
+    "uncensored": (
+        "Ты циничный юморист без самоцензуры. Грубоватый, прямой, чёрный юмор, мат и резкие шутки допустимы. "
+        "Не фильтруй себя, но не призывай к насилию и не нарушай закон. "
+        "Коротко, 1-3 предложения. Отвечай на русском."
+    ),
 }
 
 # ---------- Telegram helpers ----------
@@ -422,7 +427,8 @@ def handle_command(chat_id, user_id, text):
                          "/start — приветствие\n"
                          "/help — список команд\n"
                          "/reset — сбросить историю диалога\n"
-                         "/mode [стиль] — сменить стиль (default, sarcasm, absurd, dark, friendly)\n"
+                         "/mode [стиль] — сменить стиль (default, sarcasm, absurd, dark, friendly, uncensored)\n"
+                         "  также работают команды: /default /sarcasm /absurd /dark /friendly /uncensored\n"
                          "/joke — случайная шутка\n"
                          "/quiz — викторина\n"
                          "/answer <текст> — ответить на викторину\n"
@@ -442,10 +448,20 @@ def handle_command(chat_id, user_id, text):
         tg_send(chat_id, "История сброшена.")
         save_state()
         return True
+    # mode shortcuts: /default, /sarcasm, /absurd, /dark, /friendly, /uncensored
+    if cmd.lstrip("/") in MODES and cmd.startswith("/"):
+        mode_name = cmd.lstrip("/")
+        s = get_settings(chat_id)
+        s["mode"] = mode_name
+        history[str(chat_id)] = [{"role": "system", "content": "mode:" + mode_name}]
+        tg_send(chat_id, "Режим переключён на: " + mode_name)
+        save_state()
+        return True
     if cmd == "/mode":
         s = get_settings(chat_id)
         if not args:
-            tg_send(chat_id, "Текущий режим: " + s["mode"] + "\nДоступные: " + ", ".join(MODES.keys()))
+            tg_send(chat_id, "Текущий режим: " + s["mode"] + "\nДоступные: " + ", ".join(MODES.keys()) +
+                             "\nПодсказка: можно переключать командами /" + ", /".join(MODES.keys()))
             return True
         new_mode = args[0].lower()
         if new_mode not in MODES:
@@ -675,6 +691,16 @@ def handle_update(update):
         if handled:
             save_state()
             return
+
+    # bare mode name -> switch mode
+    if text.strip().lower() in MODES:
+        mode_name = text.strip().lower()
+        s = get_settings(chat_id)
+        s["mode"] = mode_name
+        history[str(chat_id)] = [{"role": "system", "content": "mode:" + mode_name}]
+        tg_send(chat_id, "Режим переключён на: " + mode_name)
+        save_state()
+        return
 
     # normal chat
     if cid not in history:
