@@ -28,6 +28,41 @@ MAX_PROACTIVE_PER_DAY = int(os.environ.get("MAX_PROACTIVE_PER_DAY", "2"))
 QUIET_START = int(os.environ.get("QUIET_START", "23"))  # UTC
 QUIET_END = int(os.environ.get("QUIET_END", "8"))      # UTC
 
+# ---------- Telegram helpers ----------
+def tg_request(method, params=None, timeout=30):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
+    if params:
+        data = urllib.parse.urlencode(params).encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST")
+    else:
+        req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def tg_send(chat_id, text):
+    chunks = [text] if len(text) <= 4000 else []
+    if len(text) > 4000:
+        cur = ""
+        for line in text.split("\n"):
+            if len(cur) + len(line) + 1 > 3900:
+                chunks.append(cur)
+                cur = line
+            else:
+                cur = (cur + "\n" + line) if cur else line
+        if cur:
+            chunks.append(cur)
+    for c in chunks:
+        try:
+            tg_request("sendMessage", {"chat_id": chat_id, "text": c})
+        except Exception as e:
+            log(f"send error: {e}")
+
+def tg_typing(chat_id):
+    try:
+        tg_request("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+    except Exception:
+        pass
+
 # ---------- Personas ----------
 MODES = {
     "default": (
@@ -246,6 +281,60 @@ def gemini_chat(messages, mode="default", max_tokens=1000, temperature=0.85):
 
 
 # ---------- State helpers ----------
+history = {}
+known_chats = set()
+last_proactive = {}
+chat_settings = {}
+pending_quiz = {}
+ratings = {}
+stats = {}
+state_lock = threading.Lock()
+
+def log(msg):
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+def load_json(path, default):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            log(f"load_json error {path}: {e}")
+    return default
+
+def save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        log(f"save_json error {path}: {e}")
+
+def load_state():
+    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats
+    history = load_json(HISTORY_PATH, {})
+    raw = load_json(STATE_PATH, {})
+    known_chats = set(raw.get("known_chats", []))
+    last_proactive = {str(k): v for k, v in raw.get("last_proactive", {}).items()}
+    chat_settings = {str(k): v for k, v in raw.get("chat_settings", {}).items()}
+    pending_quiz = {str(k): v for k, v in raw.get("pending_quiz", {}).items()}
+    ratings = {str(k): v for k, v in raw.get("ratings", {}).items()}
+    stats = {str(k): v for k, v in raw.get("stats", {}).items()}
+
+def save_state():
+    with state_lock:
+        raw = {
+            "known_chats": list(known_chats),
+            "last_proactive": last_proactive,
+            "chat_settings": chat_settings,
+            "pending_quiz": pending_quiz,
+            "ratings": ratings,
+            "stats": stats,
+        }
+        save_json(STATE_PATH, raw)
+        save_json(HISTORY_PATH, history)
+
+load_state()
+
 def get_settings(chat_id):
     cid = str(chat_id)
     if cid not in chat_settings:
