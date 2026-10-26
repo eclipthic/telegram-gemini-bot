@@ -114,6 +114,7 @@ def tg_typing(chat_id):
 history = {}
 known_chats = set()
 last_proactive = {}
+chat_members = {}  # chat_id -> {user_id: {"name":..., "username":..., "last":...}}
 chat_settings = {}
 pending_quiz = {}
 ratings = {}
@@ -142,7 +143,7 @@ def save_json(path, data):
         log(f"save_json error {path}: {e}")
 
 def load_state():
-    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats
+    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats, chat_members
     history = load_json(HISTORY_PATH, {})
     raw = load_json(STATE_PATH, {})
     known_chats = set(raw.get("known_chats", []))
@@ -151,6 +152,7 @@ def load_state():
     pending_quiz = {str(k): v for k, v in raw.get("pending_quiz", {}).items()}
     ratings = {str(k): v for k, v in raw.get("ratings", {}).items()}
     stats = {str(k): v for k, v in raw.get("stats", {}).items()}
+    chat_members = {str(k): v for k, v in raw.get("chat_members", {}).items()}
 
 def save_state():
     with state_lock:
@@ -161,6 +163,7 @@ def save_state():
             "pending_quiz": pending_quiz,
             "ratings": ratings,
             "stats": stats,
+            "chat_members": chat_members,
         }
         save_json(STATE_PATH, raw)
         save_json(HISTORY_PATH, history)
@@ -193,6 +196,35 @@ def touch_activity(chat_id, user_id=None):
     if user_id is not None and user_id not in st.get("users", []):
         st.setdefault("users", []).append(user_id)
 
+def track_member(chat_id, msg):
+    cid = str(chat_id)
+    user = msg.get("from") or {}
+    uid = user.get("id")
+    if not uid:
+        return
+    name = (user.get("first_name") or "") + ((" " + user.get("last_name")) if user.get("last_name") else "")
+    name = name.strip() or "Аноним"
+    username = user.get("username") or ""
+    chat_members.setdefault(cid, {})
+    chat_members[cid][str(uid)] = {"name": name, "username": username, "last": time.time()}
+    # trim to 30 members
+    if len(chat_members[cid]) > 30:
+        # remove oldest
+        oldest = sorted(chat_members[cid].items(), key=lambda x: x[1].get("last", 0))[:len(chat_members[cid]) - 30]
+        for k, _ in oldest:
+            del chat_members[cid][k]
+
+def member_context(chat_id):
+    cid = str(chat_id)
+    members = chat_members.get(cid, {})
+    if not members:
+        return ""
+    lines = []
+    for uid, info in list(members.items())[-15:]:
+        uname = ("@" + info["username"]) if info.get("username") else info["name"]
+        lines.append(f"- {info['name']} ({uname})")
+    return "Участники чата:\n" + "\n".join(lines)
+
 def is_quiet_now():
     h = time.gmtime().tm_hour
     if QUIET_START > QUIET_END:
@@ -211,6 +243,8 @@ def bot_username():
     return _bot_username or ""
 
 # ---------- LLM ----------
+_current_member_context = ""
+
 def _build_system_text(messages, mode):
     system_text = ""
     for m in messages:
@@ -220,6 +254,8 @@ def _build_system_text(messages, mode):
         system_text = MODES.get(mode, MODES[DEFAULT_MODE])
     if SYSTEM_PROMPT and mode == DEFAULT_MODE:
         system_text = SYSTEM_PROMPT + "\n" + system_text
+    if _current_member_context:
+        system_text = system_text + "\n\n" + _current_member_context + "\nМожешь обращаться к участникам по имени или @username."
     return system_text
 
 def _gemini_request(messages, mode, max_tokens, temperature):
@@ -441,6 +477,9 @@ def handle_command(chat_id, user_id, text):
                          "/stats — статистика чата\n"
                          "/rate 👍/👎 — оценить последний ответ\n"
                          "/top — топ оценённых шуток\n"
+                         "/who — участники чата\n"
+                         "/models — список нейросетей\n"
+                         "/ai <n> <вопрос> — спросить конкретную нейросеть\n"
                          "/mute / /unmute — проактивные сообщения")
         return True
     if cmd == "/reset":
@@ -594,6 +633,60 @@ def handle_command(chat_id, user_id, text):
         tg_send(chat_id, "Проактивные сообщения включены.")
         save_state()
         return True
+    if cmd == "/who":
+        mc = member_context(chat_id)
+        if not mc:
+            tg_send(chat_id, "Пока не знаю участников. Напишите что-нибудь в чат.")
+        else:
+            tg_send(chat_id, mc)
+        return True
+    if cmd == "/models":
+        lines = ["Доступные нейросети:"]
+        for i, (base, key, model) in enumerate(FREE_PROVIDERS, 1):
+            lines.append(f"{i}. {model} ({base})")
+        if GEMINI_API_KEY:
+            lines.insert(1, f"0. {MODEL} (Gemini)")
+        lines.append("\nИспользование: /ai <номер> <вопрос>")
+        tg_send(chat_id, "\n".join(lines))
+        return True
+    if cmd == "/ai":
+        if not args:
+            tg_send(chat_id, "Использование: /ai <номер> <вопрос>\nСписок: /models")
+            return True
+        try:
+            idx = int(args[0])
+        except ValueError:
+            tg_send(chat_id, "Номер должен быть числом. Список: /models")
+            return True
+        question = " ".join(args[1:]).strip()
+        if not question:
+            tg_send(chat_id, "Напишите вопрос после номера.")
+            return True
+        # resolve provider
+        providers = []
+        if GEMINI_API_KEY:
+            providers.append(("gemini", None, None))
+        providers.extend(FREE_PROVIDERS)
+        if idx < 0 or idx >= len(providers):
+            tg_send(chat_id, "Неверный номер. Список: /models")
+            return True
+        tg_typing(chat_id)
+        try:
+            if providers[idx][0] == "gemini":
+                reply = _gemini_request([{"role": "user", "content": question}], get_settings(chat_id)["mode"], 300, 0.85)
+                if not reply:
+                    reply = "Gemini не ответил."
+            else:
+                base, key, model = providers[idx]
+                reply = _openai_compat_chat(base, key, model, [{"role": "user", "content": question}],
+                                            MODES.get(get_settings(chat_id)["mode"], MODES[DEFAULT_MODE]), 0.85, 300)
+                if not reply:
+                    reply = "Модель не ответила."
+        except Exception as e:
+            reply = f"Ошибка: {e}"
+        tg_send(chat_id, reply)
+        store_last_reply(chat_id, reply)
+        return True
     if cmd == "/broadcast":
         if user_id != ADMIN_ID or ADMIN_ID == 0:
             tg_send(chat_id, "Нет прав.")
@@ -660,6 +753,7 @@ def handle_update(update):
     known_chats.add(chat_id)
     touch_activity(chat_id, user_id)
     get_settings(chat_id)
+    track_member(chat_id, msg)
 
     # groups handling
     if chat_type != "private":
@@ -727,11 +821,15 @@ def handle_update(update):
         history[cid] = [sysmsg] + history[cid][-15:]
 
     mode = get_settings(chat_id)["mode"]
+    global _current_member_context
+    _current_member_context = member_context(chat_id)
     try:
         reply = chat(history[cid], mode=mode)
     except Exception as e:
         log(f"LLM error: {e}")
         reply = "Что-то пошло не так. Попробуй ещё раз."
+    finally:
+        _current_member_context = ""
     history[cid].append({"role": "assistant", "content": reply})
     store_last_reply(chat_id, reply)
     tg_send(chat_id, reply)
