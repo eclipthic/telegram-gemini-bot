@@ -9,6 +9,13 @@ import urllib.error
 
 from flask import Flask, request, jsonify
 
+# Optional: OllamaFreeAPI (free distributed Ollama servers, no key)
+try:
+    from ollamafreeapi import OllamaFreeAPI
+    _ollama_free_available = True
+except Exception:
+    _ollama_free_available = False
+
 app = Flask(__name__)
 
 # ---------- Config ----------
@@ -247,6 +254,32 @@ def gemini_chat(messages, mode="default", max_tokens=1000, temperature=0.85):
         except Exception as e:
             log(f"Pollinations POST attempt {attempt+1} failed: {e}")
             time.sleep(1)
+    # 2b. OllamaFreeAPI (free distributed Ollama, no key)
+    if _ollama_free_available:
+        try:
+            client = OllamaFreeAPI()
+            # pick a model
+            models = client.list_models()
+            if models:
+                chosen = None
+                for pref in ("llama3.2:3b", "mistral:latest", "deepseek-r1:latest", "gpt-oss:20b"):
+                    if pref in models:
+                        chosen = pref
+                        break
+                if chosen is None:
+                    chosen = models[0]
+                last_user = ""
+                for m in reversed(messages):
+                    if m["role"] == "user":
+                        last_user = m["content"]
+                        break
+                prompt = (system_text + "\n" + last_user).strip() if system_text else last_user
+                resp = client.chat(model=chosen, prompt=prompt, timeout=15)
+                if resp:
+                    return resp.strip()
+        except Exception as e:
+            log(f"OllamaFreeAPI failed: {e}")
+
     # 3. Groq
     groq_key = os.environ.get("GROQ_API_KEY", "")
     if groq_key:
