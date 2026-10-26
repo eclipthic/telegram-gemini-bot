@@ -758,10 +758,10 @@ def handle_update(update):
     # groups handling
     if chat_type != "private":
         uname = bot_username()
-        mentioned = bool(uname and f"@{uname.lower()}" in (text or "").lower())
+        mentioned = bool(uname and (f"@{uname.lower()}" in (text or "").lower() or uname.lower() in (text or "").lower()))
         replied = msg.get("reply_to_message", {}).get("from", {}).get("is_bot", False)
         is_command = bool((text or "").strip().startswith("/"))
-        respond_all = os.environ.get("GROUP_RESPOND_ALL", "1") == "1"
+        respond_all = os.environ.get("GROUP_RESPOND_ALL", "0") == "1"
         if not (mentioned or replied or is_command or respond_all):
             save_state()
             return
