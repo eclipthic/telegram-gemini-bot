@@ -761,15 +761,19 @@ def handle_update(update):
         mentioned = bool(uname and (f"@{uname.lower()}" in (text or "").lower() or uname.lower() in (text or "").lower()))
         replied = msg.get("reply_to_message", {}).get("from", {}).get("is_bot", False)
         is_command = bool((text or "").strip().startswith("/"))
-        respond_all = os.environ.get("GROUP_RESPOND_ALL", "0") == "1"
+        respond_all = os.environ.get("GROUP_RESPOND_ALL", "1") == "1"
         if not (mentioned or replied or is_command or respond_all):
             save_state()
             return
-        # throttle non-mentioned chatter to avoid spam
+        # throttle + probability gate for non-mentioned chatter
         if not (mentioned or replied or is_command):
             s = get_settings(chat_id)
             last_resp = s.get("last_bot_response", 0)
-            if time.time() - last_resp < 4:
+            prob = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.4"))
+            if time.time() - last_resp < 8:
+                save_state()
+                return
+            if random.random() > prob:
                 save_state()
                 return
             s["last_bot_response"] = time.time()
