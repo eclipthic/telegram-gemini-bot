@@ -54,181 +54,28 @@ MODES = {
     ),
 }
 
-FALLBACK_JOKES = [
-    "Я попытался пошутить, но интернет у меня в голове отвалился. Зато я всё ещё здесь!",
-    "Моя шутка ушла в отпуск. Возвращается никогда.",
-    "Я хотел рассказать анекдот, но он оказался настолько плохим, что даже я не решился.",
-    "У меня кончились шутки. Зато есть отличная пустота!",
-    "Я бы пошутил, но боюсь, что это будет слишком смешно. Для меня.",
-    "Мой юмор сегодня в режиме энергосбережения. Включится, когда вырастет.",
-    "Я придумал шутку, но забыл, пока шёл к вам. Осталось только смущение.",
-    "Моя шутка была настолько плохой, что даже сервер её отклонил.",
-    "Сегодня я шутник-интроверт: шучу, но внутренне.",
-    "Я попытался быть смешным, но получилось как всегда — честно.",
-    "Мой юмор работает по подписке. Сегодня подписка закончилась.",
-    "Я бы рассказал шутку, но она уехала на дачу и не вернулась.",
-    "Сегодня мой юмор в отпуске за свой счёт. Возвращается по настроению.",
-    "Я придумал шутку, но она оказалась слишком умной для меня.",
-    "Мой юмор сегодня в режиме ожидания. Ждёт, пока вы тоже пошутите.",
-    "Я хотел рассказать шутку, но она оказалась настолько плохой, что её даже сервер не пропустил.",
-    "Мой юмор сегодня в режиме экономии. Включится, когда будет не лень.",
-    "Я придумал шутку, но забыл, как она начинается. Конец.",
-    "Сегодня я шутник-экстраверт: шучу, но только про себя.",
-    "Мой юмор работает по принципу 'как получится'. Получилось как всегда.",
-]
-
-def fallback_joke():
-    # Add a little variety with templates
-    templates = [
-        "Я бы пошутил про {topic}, но {excuse}.",
-        "Мой юмор сегодня {state}. {detail}",
-        "Шутка про {topic} ушла в {place}. {detail}",
-    ]
-    topics = ["интернет", "погоду", "кофе", "понедельник", "котиков", "работу", "сон"]
-    excuses = ["забыл", "не успел", "передумал", "испугался"]
-    states = ["в отпуске", "на больничном", "в режиме ожидания", "в энергосбережении"]
-    places = ["отпуск", "дачу", "магазин", "архив"]
-    details = ["Зато я здесь!", "Возвращается никогда.", "И это тоже шутка.", "Попробуйте позже."]
-    import random as _r
-    if _r.random() < 0.5:
-        return _r.choice(FALLBACK_JOKES)
-    t = _r.choice(templates)
-    return t.format(
-        topic=_r.choice(topics),
-        excuse=_r.choice(excuses),
-        state=_r.choice(states),
-        place=_r.choice(places),
-        detail=_r.choice(details),
-    )
-
-DEFAULT_SYSTEM_PROMPT = os.environ.get(
-    "SYSTEM_PROMPT",
-    MODES["default"],
-)
-
-# ---------- State ----------
-history = {}          # chat_id(str) -> list messages
-known_chats = set()   # chat ids
-last_proactive = {}   # chat_id -> timestamp
-chat_settings = {}    # chat_id -> {mode, muted, last_activity, proactive_count_date, proactive_count, last_bot_reply}
-pending_quiz = {}     # chat_id -> {q, a, expires}
-ratings = {}          # chat_id -> list {ts, score, text}
-stats = {}            # chat_id -> {messages, users:[], last_active}
-state_lock = threading.Lock()
-
-
-def log(msg):
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
-
-
-def load_json(path, default):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            log(f"load_json error {path}: {e}")
-    return default
-
-
-def save_json(path, data):
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log(f"save_json error {path}: {e}")
-
-
-def load_state():
-    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats
-    history = load_json(HISTORY_PATH, {})
-    raw = load_json(STATE_PATH, {})
-    known_chats = set(raw.get("known_chats", []))
-    last_proactive = raw.get("last_proactive", {})
-    chat_settings = raw.get("chat_settings", {})
-    pending_quiz = raw.get("pending_quiz", {})
-    ratings = raw.get("ratings", {})
-    stats = raw.get("stats", {})
-    # normalize keys to str
-    last_proactive = {str(k): v for k, v in last_proactive.items()}
-    chat_settings = {str(k): v for k, v in chat_settings.items()}
-    pending_quiz = {str(k): v for k, v in pending_quiz.items()}
-    ratings = {str(k): v for k, v in ratings.items()}
-    stats = {str(k): v for k, v in stats.items()}
-
-
-def save_state():
-    with state_lock:
-        raw = {
-            "known_chats": list(known_chats),
-            "last_proactive": last_proactive,
-            "chat_settings": chat_settings,
-            "pending_quiz": pending_quiz,
-            "ratings": ratings,
-            "stats": stats,
-        }
-        save_json(STATE_PATH, raw)
-        save_json(HISTORY_PATH, history)
-
-
-load_state()
-
-
-# ---------- Telegram helpers ----------
-def tg_request(method, params=None, timeout=30):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
-    if params:
-        data = urllib.parse.urlencode(params).encode("utf-8")
-        req = urllib.request.Request(url, data=data, method="POST")
-    else:
-        req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-
-def tg_send(chat_id, text):
-    chunks = [text] if len(text) <= 4000 else []
-    if len(text) > 4000:
-        cur = ""
-        for line in text.split("\n"):
-            if len(cur) + len(line) + 1 > 3900:
-                chunks.append(cur)
-                cur = line
-            else:
-                cur = (cur + "\n" + line) if cur else line
-        if cur:
-            chunks.append(cur)
-    for c in chunks:
-        try:
-            tg_request("sendMessage", {"chat_id": chat_id, "text": c})
-        except Exception as e:
-            log(f"send error: {e}")
-
-
-def tg_typing(chat_id):
-    try:
-        tg_request("sendChatAction", {"chat_id": chat_id, "action": "typing"})
-    except Exception:
-        pass
-
-
-# ---------- Gemini ----------
-def gemini_chat(messages, mode="default", max_tokens=1500, temperature=0.85):
+# ---------- LLM providers ----------
+def _build_system_text(messages, mode):
     system_text = ""
-    contents = []
     for m in messages:
         if m["role"] == "system":
             system_text = m["content"]
-            continue
-        gemini_role = "user" if m["role"] == "user" else "model"
-        contents.append({"role": gemini_role, "parts": [{"text": m["content"]}]} )
     if system_text.startswith("mode:"):
         system_text = MODES.get(mode, MODES["default"])
     elif not system_text:
         system_text = MODES.get(mode, MODES["default"])
+    return system_text
 
+
+def _gemini_request(messages, mode, max_tokens, temperature):
+    system_text = _build_system_text(messages, mode)
+    contents = []
+    for m in messages:
+        if m["role"] == "system":
+            continue
+        gemini_role = "user" if m["role"] == "user" else "model"
+        contents.append({"role": gemini_role, "parts": [{"text": m["content"]}]} )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={GEMINI_API_KEY}"
-
     def do_request(tb):
         gen = {"maxOutputTokens": max_tokens, "temperature": temperature, "topP": 0.95}
         if tb is not None:
@@ -236,12 +83,7 @@ def gemini_chat(messages, mode="default", max_tokens=1500, temperature=0.85):
         payload = {"contents": contents, "generationConfig": gen}
         if system_text:
             payload["systemInstruction"] = {"parts": [{"text": system_text}]}
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=60) as r:
             resp = json.loads(r.read().decode("utf-8"))
         cands = resp.get("candidates", [])
@@ -250,39 +92,136 @@ def gemini_chat(messages, mode="default", max_tokens=1500, temperature=0.85):
         parts = cands[0].get("content", {}).get("parts", [])
         texts = [p.get("text", "") for p in parts if "text" in p]
         return "".join(texts).strip() or None
-
-    # First try: thinking off (faster, cheaper). If unsupported, fall back.
     for tb in (0, None):
         try:
-            result = do_request(tb)
-            if result:
-                return result
-            # empty result: try with thinking on
-            if tb == 0:
-                continue
+            res = do_request(tb)
+            if res:
+                return res
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                log("Gemini 429; waiting 3s")
                 time.sleep(3)
                 try:
-                    result = do_request(tb)
-                    if result:
-                        return result
-                except Exception as e2:
-                    log(f"Gemini retry error: {e2}")
+                    res = do_request(tb)
+                    if res:
+                        return res
+                except Exception:
+                    pass
             elif e.code in (400, 404) and tb == 0:
-                # thinkingConfig not supported; try without
                 continue
             else:
                 try:
-                    body = e.read().decode("utf-8", errors="replace")
-                    log(f"Gemini HTTP {e.code}: {body[:200]}")
+                    log(f"Gemini HTTP {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}")
                 except Exception:
                     pass
         except Exception as e:
             log(f"Gemini error: {e}")
-    log("Gemini failed; using fallback joke")
-    return fallback_joke()
+    return None
+
+
+def _openai_compat_chat(base_url, api_key, model, messages, system_text, temperature=0.85, max_tokens=1000, extra_headers=None):
+    url = base_url.rstrip("/") + "/chat/completions"
+    msgs = []
+    if system_text:
+        msgs.append({"role": "system", "content": system_text})
+    for m in messages:
+        if m["role"] == "system":
+            continue
+        msgs.append({"role": m["role"], "content": m["content"]})
+    payload = {"model": model, "messages": msgs, "temperature": temperature, "max_tokens": max_tokens}
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        resp = json.loads(r.read().decode("utf-8"))
+    choices = resp.get("choices", [])
+    if not choices:
+        return None
+    return (choices[0].get("message", {}).get("content") or "").strip() or None
+
+
+def gemini_chat(messages, mode="default", max_tokens=1000, temperature=0.85):
+    system_text = _build_system_text(messages, mode)
+    # 1. Gemini
+    if GEMINI_API_KEY:
+        try:
+            r = _gemini_request(messages, mode, max_tokens, temperature)
+            if r:
+                return r
+        except Exception as e:
+            log(f"Gemini failed: {e}")
+    # 2. Pollinations (free, no key)
+    try:
+        r = _openai_compat_chat(
+            "https://text.pollinations.ai/openai",
+            "",
+            os.environ.get("POLLINATIONS_MODEL", "openai"),
+            messages, system_text, temperature, max_tokens,
+        )
+        if r:
+            return r
+    except Exception as e:
+        log(f"Pollinations failed: {e}")
+    # 3. Groq
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if groq_key:
+        try:
+            r = _openai_compat_chat(
+                "https://api.groq.com/openai/v1",
+                groq_key,
+                os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+                messages, system_text, temperature, max_tokens,
+            )
+            if r:
+                return r
+        except Exception as e:
+            log(f"Groq failed: {e}")
+    # 4. OpenRouter (free models)
+    or_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if or_key:
+        try:
+            r = _openai_compat_chat(
+                "https://openrouter.ai/api/v1",
+                or_key,
+                os.environ.get("OPENROUTER_MODEL", "meta-llama/llama-3.1-8b-instruct:free"),
+                messages, system_text, temperature, max_tokens,
+                extra_headers={"HTTP-Referer": "https://github.com/eclipthic/telegram-gemini-bot", "X-Title": "Telegram Humor Bot"},
+            )
+            if r:
+                return r
+        except Exception as e:
+            log(f"OpenRouter failed: {e}")
+    # 5. Hugging Face
+    hf_key = os.environ.get("HF_TOKEN", "") or os.environ.get("HUGGINGFACE_API_KEY", "")
+    if hf_key:
+        try:
+            r = _openai_compat_chat(
+                "https://api-inference.huggingface.co/v1",
+                hf_key,
+                os.environ.get("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+                messages, system_text, temperature, max_tokens,
+            )
+            if r:
+                return r
+        except Exception as e:
+            log(f"HuggingFace failed: {e}")
+    # 6. Ollama (local)
+    ollama_url = os.environ.get("OLLAMA_URL", "")
+    if ollama_url:
+        try:
+            r = _openai_compat_chat(
+                ollama_url.rstrip("/") + "/v1",
+                "",
+                os.environ.get("OLLAMA_MODEL", "llama3.1"),
+                messages, system_text, temperature, max_tokens,
+            )
+            if r:
+                return r
+        except Exception as e:
+            log(f"Ollama failed: {e}")
+    return "ИИ сейчас недоступен. Попробуй позже."
 
 
 # ---------- State helpers ----------
