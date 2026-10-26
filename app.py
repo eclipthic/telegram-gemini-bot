@@ -797,6 +797,9 @@ def handle_update(update):
             s = get_settings(chat_id)
             last_resp = s.get("last_bot_response", 0)
             prob = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.3"))
+            # questions are more likely directed at the bot
+            if "?" in (text or ""):
+                prob = max(prob, 0.7)
             if time.time() - last_resp < 10:
                 save_state()
                 return
