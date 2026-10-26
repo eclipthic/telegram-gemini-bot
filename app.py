@@ -873,7 +873,7 @@ def handle_update(update):
     global _current_member_context
     _current_member_context = member_context(chat_id)
     try:
-        reply = chat(history[cid], mode=mode, max_tokens=150)
+        reply = chat(history[cid], mode=mode, max_tokens=100)
     except Exception as e:
         log(f"LLM error: {e}")
         reply = "Что-то пошло не так. Попробуй ещё раз."
