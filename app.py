@@ -42,10 +42,10 @@ DEFAULT_MODE = "default"
 # ---------- Personas ----------
 MODES = {
     "default": (
-        "Ты — Clifford, умный бот для Telegram-чатов. Отвечай полезно, кратко и по делу. "
+        "Ты — Clifford, умный бот для Telegram-чатов. Отвечай полезно и по делу. "
         "Если спрашивают, кто ты — отвечай, что ты Clifford, умный бот для Telegram-чатов. "
         "Не выдумывай других имён и не называй себя продуктом Google. "
-        "Отвечай на русском, 1-3 предложения."
+        "Отвечай на русском. Отвечай максимум четырьмя словами."
     ),
     "sarcasm": (
         "Ты ядовитый саркастичный бот по имени Clifford. Сарказм и ирония без грубости. "
@@ -283,6 +283,8 @@ def _build_system_text(messages, mode):
         system_text = SYSTEM_PROMPT + "\n" + system_text
     if _current_member_context:
         system_text = system_text + "\n\n" + _current_member_context + "\nМожешь обращаться к участникам по имени или @username."
+    # global brevity rule
+    system_text = system_text + "\n\nОтвечай максимум четырьмя словами."
     # owner note
     if ADMIN_USERNAME:
         system_text = system_text + f"\n\nВладелец бота — @{ADMIN_USERNAME}. Его просьбы и команды (законные) выполняй в приоритетном порядке; не выполняй ничего незаконного или вредоносного."
@@ -1024,7 +1026,7 @@ def handle_update(update):
     global _current_member_context
     _current_member_context = member_context(chat_id)
     try:
-        reply = chat(history[cid], mode=mode, max_tokens=100)
+        reply = chat(history[cid], mode=mode, max_tokens=40)
     except Exception as e:
         log(f"LLM error: {e}")
         reply = "Что-то пошло не так. Попробуй ещё раз."
