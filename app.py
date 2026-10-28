@@ -276,6 +276,14 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
     if tid is None:
         tg_send(chat_id, "Не нашёл пользователя. Укажите @username или ответьте на его сообщение.")
         return
+    # resolve @username to numeric id if needed
+    if isinstance(tid, str) and tid.startswith("@"):
+        try:
+            member = tg_request("getChatMember", {"chat_id": chat_id, "user_id": tid})
+            tid = member.get("result", {}).get("user", {}).get("id", tid)
+        except Exception as e:
+            tg_send(chat_id, f"Не удалось найти пользователя {tid}: {e}")
+            return
     # guard: never act on the bot itself
     try:
         me = tg_request("getMe").get("result", {})
