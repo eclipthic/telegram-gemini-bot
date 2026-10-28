@@ -286,20 +286,28 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
             tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
             tg_send(chat_id, f"{tname} забанен.")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка бана: {e}")
+            tg_send(chat_id, f"Ошибка бана: {e}" + ((" — " + e.read().decode("utf-8", errors="replace")[:200]) if hasattr(e, "read") else ""))
     elif action == "unban":
         try:
             tg_request("unbanChatMember", {"chat_id": chat_id, "user_id": tid, "only_if_banned": True})
             tg_send(chat_id, f"{tname} разбанен.")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
     elif action == "kick":
         try:
             tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
             tg_request("unbanChatMember", {"chat_id": chat_id, "user_id": tid, "only_if_banned": True})
             tg_send(chat_id, f"{tname} кикнут.")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
     elif action == "silence":
         try:
             tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
@@ -310,7 +318,11 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
                     "can_invite_users": False, "can_pin_messages": False})})
             tg_send(chat_id, f"{tname} замьючен (не может писать).")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
     elif action == "unsilence":
         try:
             tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
@@ -321,7 +333,11 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
                     "can_invite_users": True, "can_pin_messages": False})})
             tg_send(chat_id, f"{tname} размьючен.")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
     elif action == "ro":
         mins = extra or 10
         until = int(time.time()) + mins * 60
@@ -335,7 +351,11 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
                 "until_date": until})
             tg_send(chat_id, f"{tname} переведён в read-only на {mins} мин.")
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
     elif action == "warn":
         ws = warnings.setdefault(cid, {})
         ws[str(tid)] = ws.get(str(tid), 0) + 1
@@ -346,14 +366,14 @@ def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
                 tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
                 tg_send(chat_id, f"{tname} забанен за 5 предупреждений.")
             except Exception as e:
-                tg_send(chat_id, f"Ошибка автобана: {e}")
+                tg_send(chat_id, f"Ошибка автобана: {e}" + ((" — " + e.read().decode("utf-8", errors="replace")[:200]) if hasattr(e, "read") else ""))
         elif cnt >= 3:
             try:
                 tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
                     "permissions": json.dumps({"can_send_messages": False})})
                 tg_send(chat_id, f"{tname} замьючен за 3 предупреждения.")
             except Exception as e:
-                tg_send(chat_id, f"Ошибка автомута: {e}")
+                tg_send(chat_id, f"Ошибка автомута: {e}" + ((" — " + e.read().decode("utf-8", errors="replace")[:200]) if hasattr(e, "read") else ""))
         save_state()
     elif action == "mutebot":
         muted_users.setdefault(cid, set()).add(tid)
@@ -757,7 +777,11 @@ def handle_command(chat_id, user_id, text, username=None, msg=None):
             raw = chat([{"role": "user", "content": "Сгенерируй короткую викторину (1 вопрос). Верни строго в формате:\nQ: <вопрос>\nA: <ответ>"}],
                       mode=get_settings(chat_id)["mode"])
         except Exception as e:
-            tg_send(chat_id, f"Ошибка: {e}")
+            try:
+                _eb = e.read().decode("utf-8", errors="replace")[:200] if hasattr(e, "read") else ""
+            except Exception:
+                _eb = ""
+            tg_send(chat_id, f"Ошибка: {e}" + (f" — {_eb}" if _eb else ""))
             return True
         q, a = parse_quiz(raw)
         pending_quiz[str(chat_id)] = {"q": q, "a": a, "expires": time.time() + 300}
