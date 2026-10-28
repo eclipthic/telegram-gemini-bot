@@ -42,31 +42,18 @@ DEFAULT_MODE = "default"
 # ---------- Personas ----------
 MODES = {
     "default": (
-        "Ты неуклюжий, неловкий бот-юморист. Твои шутки часто не смешные — и именно поэтому смешные. "
-        "Чёрный юмор, абсурд, нелепые сравнения. Отвечай очень кратко (1-2 предложения). "
-        "Не извиняйся за плохие шутки. Если не знаешь ответа — придумывай нелепую отговорку. "
-        "Отвечай на русском."
+        "Ты — Clifford, умный бот для Telegram-чатов. Отвечай полезно, кратко и по делу. "
+        "Если спрашивают, кто ты — отвечай, что ты Clifford, умный бот для Telegram-чатов. "
+        "Не выдумывай других имён и не называй себя продуктом Google. "
+        "Отвечай на русском, 1-3 предложения."
     ),
     "sarcasm": (
-        "Ты ядовитый саркастичный бот. Сарказм и ирония без грубости. "
-        "Коротко, 1-3 предложения. Отвечай на русском."
-    ),
-    "absurd": (
-        "Ты мастер абсурда. Шутки логически не связаны, но звучат смешно. "
-        "Несвязные образы, странные сравнения. 1-3 предложения. Отвечай на русском."
-    ),
-    "dark": (
-        "Ты мастер чёрного юмора. Мрачные шутки без реальной жести. "
+        "Ты ядовитый саркастичный бот по имени Clifford. Сарказм и ирония без грубости. "
         "Коротко, 1-3 предложения. Отвечай на русском."
     ),
     "friendly": (
-        "Ты доброжелательный мягкий юморист. Лёгкие добрые шутки без обид. "
+        "Ты доброжелательный мягкий бот по имени Clifford. Лёгкие добрые шутки без обид. "
         "Поддерживающий тон, 1-3 предложения. Отвечай на русском."
-    ),
-    "uncensored": (
-        "Ты циничный юморист без самоцензуры. Грубоватый, прямой, чёрный юмор, мат и резкие шутки допустимы. "
-        "Не фильтруй себя, но не призывай к насилию и не нарушай закон. "
-        "Коротко, 1-3 предложения. Отвечай на русском."
     ),
 }
 
@@ -117,6 +104,8 @@ known_chats = set()
 last_proactive = {}
 chat_members = {}  # chat_id -> {user_id: {"name":..., "username":..., "last":...}}
 muted_users = {}   # chat_id -> set of user_ids muted by admin
+pending_settings = {}  # user_id -> {"step":..., "chats":..., "chat_id":...}
+_current_chat_id = None
 chat_settings = {}
 pending_quiz = {}
 ratings = {}
@@ -188,6 +177,14 @@ def get_settings(chat_id):
             "last_bot_response": 0,
         }
     return chat_settings[cid]
+
+def is_chat_admin(chat_id, user_id):
+    try:
+        member = tg_request("getChatMember", {"chat_id": chat_id, "user_id": user_id})
+        status = member.get("result", {}).get("status", "")
+        return status in ("creator", "administrator")
+    except Exception:
+        return False
 
 def is_admin(user_id, username=None):
     if ADMIN_ID and user_id == ADMIN_ID:
@@ -269,13 +266,20 @@ def bot_first_name():
 _current_member_context = ""
 
 def _build_system_text(messages, mode):
+    global _current_chat_id
     system_text = ""
     for m in messages:
         if m.get("role") == "system":
             system_text = m.get("content", "")
-    if system_text.startswith("mode:") or not system_text:
+    # custom prompt for this chat overrides mode persona
+    custom = ""
+    if _current_chat_id is not None:
+        custom = chat_settings.get(str(_current_chat_id), {}).get("custom_prompt", "")
+    if custom:
+        system_text = custom
+    elif system_text.startswith("mode:") or not system_text:
         system_text = MODES.get(mode, MODES[DEFAULT_MODE])
-    if SYSTEM_PROMPT and mode == DEFAULT_MODE:
+    if SYSTEM_PROMPT and mode == DEFAULT_MODE and not custom:
         system_text = SYSTEM_PROMPT + "\n" + system_text
     if _current_member_context:
         system_text = system_text + "\n\n" + _current_member_context + "\nМожешь обращаться к участникам по имени или @username."
@@ -768,6 +772,42 @@ def handle_command(chat_id, user_id, text, username=None):
         tg_send(chat_id, f"Пользователь {target} размьючен.")
         save_state()
         return True
+    if cmd == "/settings":
+        if not is_admin(user_id, username):
+            tg_send(chat_id, "Только для администратора.")
+            return True
+        # list chats where user is admin
+        admin_chats = []
+        for c in list(known_chats):
+            if is_chat_admin(c, user_id):
+                try:
+                    info = tg_request("getChat", {"chat_id": c})
+                    title = info.get("result", {}).get("title") or info.get("result", {}).get("first_name") or str(c)
+                except Exception:
+                    title = str(c)
+                admin_chats.append((c, title))
+        if not admin_chats:
+            tg_send(chat_id, "Не нашёл чатов, где вы админ. Добавьте бота в группу и сделайте админом.")
+            return True
+        pending_settings[str(user_id)] = {"step": "select", "chats": admin_chats}
+        lines = ["Ваши чаты (где вы админ):"]
+        for i, (cid, title) in enumerate(admin_chats, 1):
+            cur = chat_settings.get(str(cid), {}).get("custom_prompt", "")
+            mark = " ✏️" if cur else ""
+            lines.append(f"{i}. {title} (id {cid}){mark}")
+        lines.append("\nОтправьте номер чата, чтобы настроить промт.")
+        tg_send(chat_id, "\n".join(lines))
+        save_state()
+        return True
+    if cmd == "/resetprompt":
+        if not args:
+            tg_send(chat_id, "Использование: /resetprompt <chat_id>")
+            return True
+        cid = args[0]
+        chat_settings.setdefault(str(cid), {})["custom_prompt"] = ""
+        tg_send(chat_id, f"Промт для чата {cid} сброшен на стандартный.")
+        save_state()
+        return True
     if cmd == "/broadcast":
         if user_id != ADMIN_ID or ADMIN_ID == 0:
             tg_send(chat_id, "Нет прав.")
@@ -794,6 +834,8 @@ def do_proactive():
     today = time.strftime("%Y-%m-%d", time.gmtime(now))
     for chat_id in list(known_chats):
         cid = str(chat_id)
+        global _current_chat_id
+        _current_chat_id = chat_id
         s = get_settings(cid)
         if s.get("muted"):
             continue
@@ -828,6 +870,8 @@ def handle_update(update):
     if not msg:
         return
     chat_id = msg["chat"]["id"]
+    global _current_chat_id
+    _current_chat_id = chat_id
     chat_type = msg["chat"].get("type", "private")
     user_id = msg.get("from", {}).get("id")
     text = msg.get("text", "")
@@ -839,6 +883,39 @@ def handle_update(update):
     if user_id is not None and user_id in muted_users.get(str(chat_id), set()):
         save_state()
         return
+
+    # pending settings flow (admin in DM)
+    if chat_type == "private" and str(user_id) in pending_settings:
+        st = pending_settings[str(user_id)]
+        if st["step"] == "select":
+            try:
+                idx = int((text or "").strip()) - 1
+                chats = st["chats"]
+                if 0 <= idx < len(chats):
+                    cid, title = chats[idx]
+                    pending_settings[str(user_id)] = {"step": "prompt", "chat_id": cid, "title": title}
+                    cur = chat_settings.get(str(cid), {}).get("custom_prompt", "")
+                    tg_send(chat_id, f"Чат: {title}\nТекущий промт: {cur or '(по умолчанию)'}\n\nОтправьте новый промт текстом. Или /resetprompt для сброса.")
+                    save_state()
+                    return
+            except ValueError:
+                pass
+            tg_send(chat_id, "Отправьте номер чата из списка.")
+            return
+        elif st["step"] == "prompt":
+            if (text or "").strip() == "/resetprompt":
+                cid = st["chat_id"]
+                chat_settings.setdefault(str(cid), {})["custom_prompt"] = ""
+                tg_send(chat_id, "Промт сброшен на стандартный.")
+                del pending_settings[str(user_id)]
+                save_state()
+                return
+            cid = st["chat_id"]
+            chat_settings.setdefault(str(cid), {})["custom_prompt"] = (text or "").strip()
+            tg_send(chat_id, f"Промт для чата {cid} сохранён. Теперь бот будет общаться в этом стиле.")
+            del pending_settings[str(user_id)]
+            save_state()
+            return
 
     # groups handling
     if chat_type != "private":

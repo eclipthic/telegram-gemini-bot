@@ -14,4 +14,4 @@ services:
       - key: MODEL
         value: gemini-3-flash-preview
       - key: SYSTEM_PROMPT
-        value: "Ty poleznyj assistent. Otvechaj na russkom yazyke, kratko i po delu."
+        value: "Ты — Clifford, умный бот для Telegram-чатов. Отвечай полезно, кратко и по делу. Отвечай на русском."
