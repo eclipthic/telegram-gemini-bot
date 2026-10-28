@@ -125,6 +125,7 @@ muted_users = {}   # chat_id -> set of user_ids muted by admin
 pending_settings = {}  # user_id -> {"step":..., "chats":..., "chat_id":...}
 warnings = {}       # chat_id -> {user_id: count}
 _current_chat_id = None
+_current_addressed = False
 chat_settings = {}
 pending_quiz = {}
 ratings = {}
@@ -449,6 +450,9 @@ def _build_system_text(messages, mode):
         system_text = SYSTEM_PROMPT + "\n" + system_text
     if _current_member_context:
         system_text = system_text + "\n\n" + _current_member_context + "\nМожешь обращаться к участникам по имени или @username."
+    # freedom: bot decides whether to reply
+    if not _current_addressed:
+        system_text = system_text + "\n\nТы можешь выбрать не отвечать. Если сообщение не требует твоего ответа, ответь ровно SKIP."
     # global brevity rule
     system_text = system_text + "\n\nОтвечай максимум четырьмя словами."
     # owner note
@@ -955,8 +959,9 @@ def handle_update(update):
     if not msg:
         return
     chat_id = msg["chat"]["id"]
-    global _current_chat_id
+    global _current_chat_id, _current_addressed
     _current_chat_id = chat_id
+    _current_addressed = False
     chat_type = msg["chat"].get("type", "private")
     user_id = msg.get("from", {}).get("id")
     text = msg.get("text", "")
@@ -1035,27 +1040,17 @@ def handle_update(update):
                     mentioned = True
                     break
         replied = msg.get("reply_to_message", {}).get("from", {}).get("is_bot", False)
+        _current_addressed = bool(mentioned or replied or is_command)
         is_command = bool((text or "").strip().startswith("/"))
         respond_all = os.environ.get("GROUP_RESPOND_ALL", "1") == "1"
         if not (mentioned or replied or is_command or respond_all):
             save_state()
             return
-        # throttle + probability gate for non-mentioned chatter
+        # light anti-flood throttle for non-mentioned chatter; LLM decides whether to reply (SKIP)
         if not (mentioned or replied or is_command):
             s = get_settings(chat_id)
             last_resp = s.get("last_bot_response", 0)
-            prob = float(os.environ.get("GROUP_REPLY_PROBABILITY", "0.3"))
-            # questions are more likely directed at the bot
-            if "?" in (text or ""):
-                prob = max(prob, 0.7)
-            if time.time() - last_resp < 10:
-                save_state()
-                return
-            # skip very short / trivial messages
-            if len((text or "").strip()) < 4:
-                save_state()
-                return
-            if random.random() > prob:
+            if time.time() - last_resp < 6:
                 save_state()
                 return
             s["last_bot_response"] = time.time()
@@ -1125,6 +1120,10 @@ def handle_update(update):
         reply = "Что-то пошло не так. Попробуй ещё раз."
     finally:
         _current_member_context = ""
+    if (reply or "").strip().upper() == "SKIP":
+        # bot chose not to reply
+        save_state()
+        return
     history[cid].append({"role": "assistant", "content": reply})
     store_last_reply(chat_id, reply)
     tg_send(chat_id, reply)
