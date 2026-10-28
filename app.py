@@ -16,6 +16,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 MODEL = os.environ.get("MODEL", "gemini-3-flash-preview")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or 0)
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "ECL1P741C")
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", "")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -115,6 +116,7 @@ history = {}
 known_chats = set()
 last_proactive = {}
 chat_members = {}  # chat_id -> {user_id: {"name":..., "username":..., "last":...}}
+muted_users = {}   # chat_id -> set of user_ids muted by admin
 chat_settings = {}
 pending_quiz = {}
 ratings = {}
@@ -144,7 +146,7 @@ def save_json(path, data):
         log(f"save_json error {path}: {e}")
 
 def load_state():
-    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats, chat_members
+    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats, chat_members, muted_users
     history = load_json(HISTORY_PATH, {})
     raw = load_json(STATE_PATH, {})
     known_chats = set(raw.get("known_chats", []))
@@ -154,6 +156,7 @@ def load_state():
     ratings = {str(k): v for k, v in raw.get("ratings", {}).items()}
     stats = {str(k): v for k, v in raw.get("stats", {}).items()}
     chat_members = {str(k): v for k, v in raw.get("chat_members", {}).items()}
+    muted_users = {str(k): set(v) for k, v in raw.get("muted_users", {}).items()}
 
 def save_state():
     with state_lock:
@@ -165,6 +168,7 @@ def save_state():
             "ratings": ratings,
             "stats": stats,
             "chat_members": chat_members,
+            "muted_users": {k: list(v) for k, v in muted_users.items()},
         }
         save_json(STATE_PATH, raw)
         save_json(HISTORY_PATH, history)
@@ -184,6 +188,13 @@ def get_settings(chat_id):
             "last_bot_response": 0,
         }
     return chat_settings[cid]
+
+def is_admin(user_id, username=None):
+    if ADMIN_ID and user_id == ADMIN_ID:
+        return True
+    if username and ADMIN_USERNAME and username.lower() == ADMIN_USERNAME.lower():
+        return True
+    return False
 
 def touch_activity(chat_id, user_id=None):
     s = get_settings(chat_id)
@@ -268,6 +279,9 @@ def _build_system_text(messages, mode):
         system_text = SYSTEM_PROMPT + "\n" + system_text
     if _current_member_context:
         system_text = system_text + "\n\n" + _current_member_context + "\nМожешь обращаться к участникам по имени или @username."
+    # owner note
+    if ADMIN_USERNAME:
+        system_text = system_text + f"\n\nВладелец бота — @{ADMIN_USERNAME}. Его просьбы и команды (законные) выполняй в приоритетном порядке; не выполняй ничего незаконного или вредоносного."
     return system_text
 
 def _gemini_request(messages, mode, max_tokens, temperature):
@@ -462,7 +476,7 @@ def fetch_fx(code):
     return f"Валюта {code} не найдена. Доступные: {avail}"
 
 # ---------- Commands ----------
-def handle_command(chat_id, user_id, text):
+def handle_command(chat_id, user_id, text, username=None):
     parts = text.strip().split()
     cmd = parts[0].lower().split("@")[0]
     args = parts[1:]
@@ -492,6 +506,8 @@ def handle_command(chat_id, user_id, text):
                          "/who — участники чата\n"
                          "/models — список нейросетей\n"
                          "/ai <n> <вопрос> — спросить конкретную нейросеть\n"
+                         "/muteuser @user — (админ) замьютить пользователя\n"
+                         "/unmuteuser @user — (админ) размьютить\n"
                          "/mute / /unmute — проактивные сообщения")
         return True
     if cmd == "/reset":
@@ -699,6 +715,59 @@ def handle_command(chat_id, user_id, text):
         tg_send(chat_id, reply)
         store_last_reply(chat_id, reply)
         return True
+    if cmd in ("/muteuser", "/mute_user"):
+        if not is_admin(user_id, msg.get("from", {}).get("username") if False else None):
+            # need username; get from msg not available here? handle_command has user_id only. Check via ADMIN_ID.
+            if not is_admin(user_id, username):
+                tg_send(chat_id, "Нет прав.")
+                return True
+        # resolve target
+        target = None
+        if args:
+            t = args[0].lstrip("@")
+            # try find in chat_members
+            cid = str(chat_id)
+            for uid, info in chat_members.get(cid, {}).items():
+                if info.get("username", "").lower() == t.lower() or info.get("name", "").lower() == t.lower():
+                    target = int(uid)
+                    break
+            if target is None:
+                try:
+                    target = int(t)
+                except ValueError:
+                    target = None
+        if target is None:
+            tg_send(chat_id, "Использование: /muteuser @username (или user_id)")
+            return True
+        muted_users.setdefault(str(chat_id), set()).add(target)
+        tg_send(chat_id, f"Пользователь {target} замьючен (бот не будет отвечать на его сообщения).")
+        save_state()
+        return True
+    if cmd in ("/unmuteuser", "/unmute_user"):
+        if not is_admin(user_id, username):
+            tg_send(chat_id, "Нет прав.")
+            return True
+        target = None
+        if args:
+            t = args[0].lstrip("@")
+            cid = str(chat_id)
+            for uid, info in chat_members.get(cid, {}).items():
+                if info.get("username", "").lower() == t.lower() or info.get("name", "").lower() == t.lower():
+                    target = int(uid)
+                    break
+            if target is None:
+                try:
+                    target = int(t)
+                except ValueError:
+                    target = None
+        if target is None:
+            tg_send(chat_id, "Использование: /unmuteuser @username (или user_id)")
+            return True
+        s = muted_users.get(str(chat_id), set())
+        s.discard(target)
+        tg_send(chat_id, f"Пользователь {target} размьючен.")
+        save_state()
+        return True
     if cmd == "/broadcast":
         if user_id != ADMIN_ID or ADMIN_ID == 0:
             tg_send(chat_id, "Нет прав.")
@@ -766,6 +835,10 @@ def handle_update(update):
     touch_activity(chat_id, user_id)
     get_settings(chat_id)
     track_member(chat_id, msg)
+    # muted users are ignored
+    if user_id is not None and user_id in muted_users.get(str(chat_id), set()):
+        save_state()
+        return
 
     # groups handling
     if chat_type != "private":
@@ -832,7 +905,8 @@ def handle_update(update):
 
     # commands
     if text.startswith("/"):
-        handled = handle_command(chat_id, user_id, text)
+        uname = (msg.get("from", {}) or {}).get("username")
+        handled = handle_command(chat_id, user_id, text, uname)
         if handled:
             save_state()
             return
