@@ -202,16 +202,9 @@ def get_settings(chat_id):
 
 def resolve_target(chat_id, msg, args):
     """Resolve target user_id from reply/args/text. Returns (user_id_or_@username, name) or (None, None)."""
-    # 1. reply to a message
-    reply = msg.get("reply_to_message") if isinstance(msg, dict) else None
-    if reply:
-        u = reply.get("from") or {}
-        if u.get("id"):
-            name = (u.get("first_name") or "") + ((" " + u.get("last_name")) if u.get("last_name") else "")
-            return u.get("id"), name.strip() or str(u.get("id"))
     text = (msg.get("text") or "") if isinstance(msg, dict) else ""
     cid = str(chat_id)
-    # 2. @username
+    # 1. explicit @username in text takes priority
     import re
     m = re.search(r"@(\w+)", text or "")
     if m:
@@ -219,8 +212,14 @@ def resolve_target(chat_id, msg, args):
         for uid, info in chat_members.get(cid, {}).items():
             if info.get("username", "").lower() == uname.lower():
                 return int(uid), info.get("name") or ("@" + uname)
-        # not in members -> pass @username through to Telegram API
         return "@" + uname, "@" + uname
+    # 2. reply to a message (only if no explicit @username)
+    reply = msg.get("reply_to_message") if isinstance(msg, dict) else None
+    if reply:
+        u = reply.get("from") or {}
+        if u.get("id"):
+            name = (u.get("first_name") or "") + ((" " + u.get("last_name")) if u.get("last_name") else "")
+            return u.get("id"), name.strip() or str(u.get("id"))
     # 3. known member name/username contained in text
     low = (text or "").lower()
     for uid, info in chat_members.get(cid, {}).items():
