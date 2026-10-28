@@ -230,14 +230,7 @@ def resolve_target(chat_id, msg, args):
             return int(uid), name
         if username and username.lower() in low:
             return int(uid), name or username
-    # 4. most recent non-admin member (fallback for "замьють этого ..." without exact name)
-    members = chat_members.get(cid, {})
-    if members:
-        recent = sorted(members.items(), key=lambda x: x[1].get("last", 0), reverse=True)
-        for uid, info in recent:
-            if str(uid) != str(user_id) if False else True:
-                return int(uid), info.get("name") or str(uid)
-    # 5. args
+    # 4. args
     if args:
         t = str(args[0]).lstrip("@")
         try:
@@ -281,6 +274,17 @@ def parse_admin_intent(text):
 def execute_moderation(chat_id, msg, user_id, username, action, target, extra):
     cid = str(chat_id)
     tid, tname = resolve_target(chat_id, msg, [target] if target else [])
+    if tid is None:
+        tg_send(chat_id, "Не нашёл пользователя. Укажите @username или ответьте на его сообщение.")
+        return
+    # guard: never act on the bot itself
+    try:
+        me = tg_request("getMe").get("result", {})
+        if tid == me.get("id") or str(tid) == str(me.get("id")):
+            tg_send(chat_id, "Нельзя применять модерацию к боту.")
+            return
+    except Exception:
+        pass
     if action == "ban":
         try:
             tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
