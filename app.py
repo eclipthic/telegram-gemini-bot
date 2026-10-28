@@ -201,26 +201,44 @@ def get_settings(chat_id):
     return chat_settings[cid]
 
 def resolve_target(chat_id, msg, args):
-    """Resolve target user_id from args or reply. Returns (user_id, name) or (None, None)."""
-    # reply to a message
+    """Resolve target user_id from reply/args/text. Returns (user_id_or_@username, name) or (None, None)."""
+    # 1. reply to a message
     reply = msg.get("reply_to_message") if isinstance(msg, dict) else None
     if reply:
         u = reply.get("from") or {}
         if u.get("id"):
             name = (u.get("first_name") or "") + ((" " + u.get("last_name")) if u.get("last_name") else "")
             return u.get("id"), name.strip() or str(u.get("id"))
-    if not args:
-        return None, None
-    t = args[0].lstrip("@")
+    text = (msg.get("text") or "") if isinstance(msg, dict) else ""
     cid = str(chat_id)
-    # search in chat_members
+    # 2. @username
+    import re
+    m = re.search(r"@(\w+)", text or "")
+    if m:
+        uname = m.group(1)
+        for uid, info in chat_members.get(cid, {}).items():
+            if info.get("username", "").lower() == uname.lower():
+                return int(uid), info.get("name") or ("@" + uname)
+        # not in members -> pass @username through to Telegram API
+        return "@" + uname, "@" + uname
+    # 3. known member name/username contained in text
+    low = (text or "").lower()
     for uid, info in chat_members.get(cid, {}).items():
-        if info.get("username", "").lower() == t.lower() or info.get("name", "").lower() == t.lower():
-            return int(uid), info.get("name") or t
-    try:
-        return int(t), t
-    except ValueError:
-        return None, None
+        name = info.get("name", "")
+        username = info.get("username", "")
+        if name and len(name) >= 3 and name.lower() in low:
+            return int(uid), name
+        if username and username.lower() in low:
+            return int(uid), name or username
+    # 4. args
+    if args:
+        t = str(args[0]).lstrip("@")
+        try:
+            return int(t), t
+        except ValueError:
+            if t:
+                return "@" + t if not t.startswith("@") else t, t
+    return None, None
 
 def parse_admin_intent(text):
     """Return (action, target_str, minutes) or None."""
@@ -970,7 +988,7 @@ def handle_update(update):
     get_settings(chat_id)
     track_member(chat_id, msg)
     # muted users are ignored
-    if user_id is not None and user_id in muted_users.get(str(chat_id), set()):
+    if user_id is not None and str(user_id) in {str(x) for x in muted_users.get(str(chat_id), set())}:
         save_state()
         return
 
