@@ -123,6 +123,7 @@ last_proactive = {}
 chat_members = {}  # chat_id -> {user_id: {"name":..., "username":..., "last":...}}
 muted_users = {}   # chat_id -> set of user_ids muted by admin
 pending_settings = {}  # user_id -> {"step":..., "chats":..., "chat_id":...}
+warnings = {}       # chat_id -> {user_id: count}
 _current_chat_id = None
 chat_settings = {}
 pending_quiz = {}
@@ -153,7 +154,7 @@ def save_json(path, data):
         log(f"save_json error {path}: {e}")
 
 def load_state():
-    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats, chat_members, muted_users
+    global history, known_chats, last_proactive, chat_settings, pending_quiz, ratings, stats, chat_members, muted_users, pending_settings, warnings
     history = load_json(HISTORY_PATH, {})
     raw = load_json(STATE_PATH, {})
     known_chats = set(raw.get("known_chats", []))
@@ -164,6 +165,7 @@ def load_state():
     stats = {str(k): v for k, v in raw.get("stats", {}).items()}
     chat_members = {str(k): v for k, v in raw.get("chat_members", {}).items()}
     muted_users = {str(k): set(v) for k, v in raw.get("muted_users", {}).items()}
+    warnings = {str(k): {str(kk): vv for kk, vv in v.items()} for k, v in raw.get("warnings", {}).items()}
 
 def save_state():
     with state_lock:
@@ -176,6 +178,7 @@ def save_state():
             "stats": stats,
             "chat_members": chat_members,
             "muted_users": {k: list(v) for k, v in muted_users.items()},
+            "warnings": warnings,
         }
         save_json(STATE_PATH, raw)
         save_json(HISTORY_PATH, history)
@@ -195,6 +198,28 @@ def get_settings(chat_id):
             "last_bot_response": 0,
         }
     return chat_settings[cid]
+
+def resolve_target(chat_id, msg, args):
+    """Resolve target user_id from args or reply. Returns (user_id, name) or (None, None)."""
+    # reply to a message
+    reply = msg.get("reply_to_message") if isinstance(msg, dict) else None
+    if reply:
+        u = reply.get("from") or {}
+        if u.get("id"):
+            name = (u.get("first_name") or "") + ((" " + u.get("last_name")) if u.get("last_name") else "")
+            return u.get("id"), name.strip() or str(u.get("id"))
+    if not args:
+        return None, None
+    t = args[0].lstrip("@")
+    cid = str(chat_id)
+    # search in chat_members
+    for uid, info in chat_members.get(cid, {}).items():
+        if info.get("username", "").lower() == t.lower() or info.get("name", "").lower() == t.lower():
+            return int(uid), info.get("name") or t
+    try:
+        return int(t), t
+    except ValueError:
+        return None, None
 
 def is_chat_admin(chat_id, user_id):
     try:
@@ -500,7 +525,7 @@ def fetch_fx(code):
     return f"Валюта {code} не найдена. Доступные: {avail}"
 
 # ---------- Commands ----------
-def handle_command(chat_id, user_id, text, username=None):
+def handle_command(chat_id, user_id, text, username=None, msg=None):
     parts = text.strip().split()
     cmd = parts[0].lower().split("@")[0]
     args = parts[1:]
@@ -532,7 +557,13 @@ def handle_command(chat_id, user_id, text, username=None):
                          "/ai <n> <вопрос> — спросить конкретную нейросеть\n"
                          "/muteuser @user — (админ) замьютить пользователя\n"
                          "/unmuteuser @user — (админ) размьютить\n"
-                         "/mute / /unmute — проактивные сообщения")
+                         "/mute / /unmute — проактивные сообщения\n"
+                   "/muteuser /unmuteuser — бот игнорирует пользователя\n"
+                   "/ban /unban /kick — бан/разбан/кик\n"
+                   "/silence /unsilence — мьют в чате\n"
+                   "/ro <мин> /unro — read-only на N минут\n"
+                   "/warn /warnings — предупреждения (автомут 3, автобан 5)\n"
+                   "/settings — настройка промта для чата (в ЛС)")
         return True
     if cmd == "/reset":
         mode = get_settings(chat_id)["mode"]
@@ -828,6 +859,145 @@ def handle_command(chat_id, user_id, text, username=None):
         tg_send(chat_id, f"Промт для чата {cid} сброшен на стандартный.")
         save_state()
         return True
+    # ---------- Admin moderation commands ----------
+    admin_cmds = ("/ban", "/unban", "/kick", "/silence", "/unsilence", "/warn", "/warnings", "/ro", "/unro")
+    if cmd in admin_cmds:
+        if not is_admin(user_id, username):
+            tg_send(chat_id, "Нет прав.")
+            return True
+        cid = str(chat_id)
+        # /warnings [user]
+        if cmd == "/warnings":
+            if args:
+                tid, tname = resolve_target(chat_id, msg, args)
+                if tid is None:
+                    tg_send(chat_id, "Использование: /warnings [@user]")
+                    return True
+                c = warnings.get(cid, {}).get(str(tid), 0)
+                tg_send(chat_id, f"Предупреждений у {tname}: {c}")
+            else:
+                ws = warnings.get(cid, {})
+                if not ws:
+                    tg_send(chat_id, "Предупреждений нет.")
+                else:
+                    lines = ["Предупреждения:"]
+                    for uid, c in ws.items():
+                        info = chat_members.get(cid, {}).get(str(uid), {})
+                        name = info.get("name", uid)
+                        lines.append(f"- {name}: {c}")
+                    tg_send(chat_id, "\n".join(lines))
+            return True
+        # resolve target for others
+        tid, tname = resolve_target(chat_id, msg, args)
+        if tid is None:
+            tg_send(chat_id, "Укажите пользователя: /cmd @username или ответьте на его сообщение.")
+            return True
+        if cmd == "/ban":
+            try:
+                tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
+                tg_send(chat_id, f"{tname} забанен.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка бана: {e}")
+            return True
+        if cmd == "/unban":
+            try:
+                tg_request("unbanChatMember", {"chat_id": chat_id, "user_id": tid, "only_if_banned": True})
+                tg_send(chat_id, f"{tname} разбанен.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/kick":
+            try:
+                tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
+                tg_request("unbanChatMember", {"chat_id": chat_id, "user_id": tid, "only_if_banned": True})
+                tg_send(chat_id, f"{tname} кикнут.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/silence":
+            # restrict sending messages
+            try:
+                tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
+                    "permissions": json.dumps({"can_send_messages": False, "can_send_audios": False,
+                        "can_send_documents": False, "can_send_photos": False, "can_send_videos": False,
+                        "can_send_video_notes": False, "can_send_voice_notes": False, "can_send_polls": False,
+                        "can_send_other_messages": False, "can_add_web_page_previews": False, "can_change_info": False,
+                        "can_invite_users": False, "can_pin_messages": False})})
+                tg_send(chat_id, f"{tname} замьючен (не может писать).")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/unsilence":
+            try:
+                tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
+                    "permissions": json.dumps({"can_send_messages": True, "can_send_audios": True,
+                        "can_send_documents": True, "can_send_photos": True, "can_send_videos": True,
+                        "can_send_video_notes": True, "can_send_voice_notes": True, "can_send_polls": True,
+                        "can_send_other_messages": True, "can_add_web_page_previews": True, "can_change_info": False,
+                        "can_invite_users": True, "can_pin_messages": False})})
+                tg_send(chat_id, f"{tname} размьючен.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/ro":
+            # read-only for N minutes (default 10)
+            mins = 10
+            if len(args) > 1:
+                try:
+                    mins = max(1, min(1440, int(args[1])))
+                except ValueError:
+                    mins = 10
+            until = int(time.time()) + mins * 60
+            try:
+                tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
+                    "permissions": json.dumps({"can_send_messages": False, "can_send_audios": False,
+                        "can_send_documents": False, "can_send_photos": False, "can_send_videos": False,
+                        "can_send_video_notes": False, "can_send_voice_notes": False, "can_send_polls": False,
+                        "can_send_other_messages": False, "can_add_web_page_previews": False, "can_change_info": False,
+                        "can_invite_users": False, "can_pin_messages": False}),
+                    "until_date": until})
+                tg_send(chat_id, f"{tname} переведён в read-only на {mins} мин.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/unro":
+            try:
+                tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
+                    "permissions": json.dumps({"can_send_messages": True, "can_send_audios": True,
+                        "can_send_documents": True, "can_send_photos": True, "can_send_videos": True,
+                        "can_send_video_notes": True, "can_send_voice_notes": True, "can_send_polls": True,
+                        "can_send_other_messages": True, "can_add_web_page_previews": True, "can_change_info": False,
+                        "can_invite_users": True, "can_pin_messages": False})})
+                tg_send(chat_id, f"{tname} снят с read-only.")
+            except Exception as e:
+                tg_send(chat_id, f"Ошибка: {e}")
+            return True
+        if cmd == "/warn":
+            reason = " ".join(args[1:]).strip() if len(args) > 1 else ""
+            ws = warnings.setdefault(cid, {})
+            ws[str(tid)] = ws.get(str(tid), 0) + 1
+            cnt = ws[str(tid)]
+            msg_text = f"⚠️ {tname} получил предупреждение ({cnt})."
+            if reason:
+                msg_text += f" Причина: {reason}"
+            tg_send(chat_id, msg_text)
+            # auto-actions
+            if cnt >= 5:
+                try:
+                    tg_request("banChatMember", {"chat_id": chat_id, "user_id": tid})
+                    tg_send(chat_id, f"{tname} забанен за 5 предупреждений.")
+                except Exception as e:
+                    tg_send(chat_id, f"Ошибка автобана: {e}")
+            elif cnt >= 3:
+                try:
+                    tg_request("restrictChatMember", {"chat_id": chat_id, "user_id": tid,
+                        "permissions": json.dumps({"can_send_messages": False})})
+                    tg_send(chat_id, f"{tname} замьючен за 3 предупреждения.")
+                except Exception as e:
+                    tg_send(chat_id, f"Ошибка автомута: {e}")
+            save_state()
+            return True
+        return True
     if cmd == "/broadcast":
         if user_id != ADMIN_ID or ADMIN_ID == 0:
             tg_send(chat_id, "Нет прав.")
@@ -1003,7 +1173,7 @@ def handle_update(update):
     # commands
     if text.startswith("/"):
         uname = (msg.get("from", {}) or {}).get("username")
-        handled = handle_command(chat_id, user_id, text, uname)
+        handled = handle_command(chat_id, user_id, text, uname, msg)
         if handled:
             save_state()
             return
